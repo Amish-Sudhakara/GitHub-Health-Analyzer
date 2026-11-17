@@ -14,9 +14,9 @@ Built with a **React + Vite** frontend and a **serverless Python 3.12 AWS Lambda
   - Monthly contributions bar chart (Recharts).
   - 52-week GitHub-style contribution heatmap.
   - Top 5 primary programming languages distribution across original public repositories.
-- **Repository Maintenance & Documentation Rating**:
+- **Repository Maintenance & Activity Rating**:
   - Evaluates up to 10 most recently updated original public repositories (forks and empty repositories excluded).
-  - Analyzes 3 objective signals: nonempty description (+1), verified README file (+1), and push within last 180 days (+1).
+  - Analyzes 3 objective signals: verified README file (+1), push within last 180 days (+1), and at least 10 commits on default branch (+1).
   - Categorizes into **Good** (0–1 pts), **Very Good** (2 pts), or **Excellent** (3 pts).
 - **Deterministic Improvement Suggestions**: 2–3 actionable, rule-based recommendations tailored to the student's metrics.
 - **Downloadable PDF Report**: Instant client-side report generation formatted in Slate & Sage with summary tables, ratings, and methodology notes.
@@ -210,14 +210,17 @@ Accept: application/json
       "description": "My first repository",
       "language": "Ruby",
       "stargazers_count": 2500,
+      "commit_count": 42,
+      "commit_count_display": "42",
       "pushed_at_formatted": "2026-10-15",
       "score": 3,
       "rating": "Excellent",
       "checks": {
-        "has_description": true,
         "has_readme": true,
         "recent_push": true,
-        "readme_evaluated": true
+        "commits_ge_10": true,
+        "readme_evaluated": true,
+        "commits_evaluated": true
       }
     }
   ],
@@ -253,23 +256,23 @@ Categorizes consistent public GitHub presence over the rolling 12 months (0–53
 
 *An active week is defined as a calendar week with at least 1 visible public contribution.*
 
-### 2. Repository Maintenance & Documentation Rating
+### 2. Repository Maintenance & Activity Rating
 Evaluates up to 10 most recently updated original public repositories on 3 objective signals:
-1. **Description**: Has a nonempty description string (+1 pt).
-2. **README**: Repository contains a readable README file (+1 pt).
-3. **Recency**: Pushed to within the last 180 days (+1 pt).
+1. **README**: Repository contains a readable README file (+1 pt).
+2. **Recent Activity (<180d)**: Pushed to within the last 180 days (+1 pt).
+3. **Commits (≥10)**: Repository has at least 10 commits on its default branch (+1 pt).
 
 - **0–1 points**: Good
 - **2 points**: Very Good
 - **3 points**: Excellent
-- *Not evaluated*: Displayed if GitHub API encountered an error checking README.
+- *Not evaluated*: Displayed if GitHub API encountered an error checking README or commit count.
 
 ---
 
 ## Known Limitations
 
 - **Public Data Only**: The analyzer uses public GitHub APIs. Activity in private repositories and private organizations with restricted visibility is excluded.
-- **Hygiene Signals vs Code Quality**: Ratings reflect documentation and maintenance hygiene (READMEs, descriptions, push frequency), not internal algorithm design, architecture, or code complexity.
+- **Hygiene Signals vs Code Quality**: Ratings reflect documentation and maintenance hygiene (README presence, push frequency, commit volume), not internal algorithm design, architecture, or code complexity.
 - **API Rate Limits**: GitHub enforces a rate limit of 60 requests/hour for unauthenticated REST calls. Providing a personal access token (`GITHUB_TOKEN`) raises this to 5,000 requests/hour and enables GraphQL contribution calendar retrieval.
 - **Capped Repositories**: Profiles with over 100 repositories are capped at the first 100 metadata results, with the `data_limited: true` flag set.
 

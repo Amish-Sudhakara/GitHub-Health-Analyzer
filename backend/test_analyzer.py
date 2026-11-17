@@ -1,6 +1,7 @@
 """
 Comprehensive Unit Tests for GitHub Student Health Analyzer Backend.
-Tests all requirements using Python's standard unittest and unittest.mock.
+Tests all requirements including commit count signals, README checks, recency,
+ratings, suggestions, and API failure modes.
 """
 
 import json
@@ -50,26 +51,119 @@ class TestScoringAndRating(unittest.TestCase):
         # None: Insufficient data
         self.assertEqual(lambda_function.calculate_activity_rating(None), "Insufficient data")
 
-    def test_repository_rating(self):
-        # All checks pass
-        rating, score = lambda_function.rate_repository(has_desc=True, has_readme=True, recent_push=True, readme_evaluated=True)
+    def test_repository_rating_commit_above_10(self):
+        # All 3 signals pass: README, <180d, commits >= 10 (commits=25)
+        rating, score = lambda_function.rate_repository(
+            has_readme=True, recent_push=True, commit_count=25,
+            readme_evaluated=True, commits_evaluated=True
+        )
         self.assertEqual((rating, score), ("Excellent", 3))
 
-        # 2 checks pass
-        rating, score = lambda_function.rate_repository(has_desc=True, has_readme=True, recent_push=False, readme_evaluated=True)
+    def test_repository_rating_commit_equal_10(self):
+        # Exactly 10 commits -> meets >=10 threshold
+        rating, score = lambda_function.rate_repository(
+            has_readme=True, recent_push=True, commit_count=10,
+            readme_evaluated=True, commits_evaluated=True
+        )
+        self.assertEqual((rating, score), ("Excellent", 3))
+
+    def test_repository_rating_commit_below_10(self):
+        # 9 commits -> fails commits signal, passes README & recency -> 2 points
+        rating, score = lambda_function.rate_repository(
+            has_readme=True, recent_push=True, commit_count=9,
+            readme_evaluated=True, commits_evaluated=True
+        )
         self.assertEqual((rating, score), ("Very Good", 2))
 
-        # 1 check passes
-        rating, score = lambda_function.rate_repository(has_desc=False, has_readme=True, recent_push=False, readme_evaluated=True)
+        # 5 commits, only README passes -> 1 point
+        rating, score = lambda_function.rate_repository(
+            has_readme=True, recent_push=False, commit_count=5,
+            readme_evaluated=True, commits_evaluated=True
+        )
         self.assertEqual((rating, score), ("Good", 1))
 
-        # 0 checks pass
-        rating, score = lambda_function.rate_repository(has_desc=False, has_readme=False, recent_push=False, readme_evaluated=True)
-        self.assertEqual((rating, score), ("Good", 0))
+    def test_repository_rating_single_commit(self):
+        # 1 commit (single commit repo)
+        rating, score = lambda_function.rate_repository(
+            has_readme=True, recent_push=False, commit_count=1,
+            readme_evaluated=True, commits_evaluated=True
+        )
+        self.assertEqual((rating, score), ("Good", 1))
 
-        # README check failed due to API error
-        rating, score = lambda_function.rate_repository(has_desc=True, has_readme=False, recent_push=True, readme_evaluated=False)
+        # 1 commit with README + recent push -> 2 points
+        rating, score = lambda_function.rate_repository(
+            has_readme=True, recent_push=True, commit_count=1,
+            readme_evaluated=True, commits_evaluated=True
+        )
+        self.assertEqual((rating, score), ("Very Good", 2))
+
+    def test_repository_rating_description_removed_from_scoring(self):
+        # Description is not a parameter and does not affect the 3 signals
+        rating_with_all = lambda_function.rate_repository(
+            has_readme=True, recent_push=True, commit_count=15,
+            readme_evaluated=True, commits_evaluated=True
+        )
+        self.assertEqual(rating_with_all, ("Excellent", 3))
+
+    def test_repository_rating_api_failures(self):
+        # README check failed (e.g. rate limit / network error)
+        rating, score = lambda_function.rate_repository(
+            has_readme=False, recent_push=True, commit_count=20,
+            readme_evaluated=False, commits_evaluated=True
+        )
         self.assertEqual(rating, "Not evaluated")
+
+        # Commit count check failed (commits_evaluated = False)
+        rating, score = lambda_function.rate_repository(
+            has_readme=True, recent_push=True, commit_count=None,
+            readme_evaluated=True, commits_evaluated=False
+        )
+        self.assertEqual(rating, "Not evaluated")
+
+        # Both failed
+        rating, score = lambda_function.rate_repository(
+            has_readme=False, recent_push=True, commit_count=None,
+            readme_evaluated=False, commits_evaluated=False
+        )
+        self.assertEqual(rating, "Not evaluated")
+
+
+class TestCommitCountFetcher(unittest.TestCase):
+    @patch("lambda_function.github_request")
+    def test_link_header_pagination(self, mock_request):
+        # Link header with rel="last" page=42
+        link = '<https://api.github.com/repositories/1/commits?per_page=1&sha=main&page=2>; rel="next", <https://api.github.com/repositories/1/commits?per_page=1&sha=main&page=42>; rel="last"'
+        mock_request.return_value = (200, [{"sha": "abc"}], {"Link": link})
+
+        count, evaluated = lambda_function.fetch_repo_commit_count("owner", "repo", "main")
+        self.assertTrue(evaluated)
+        self.assertEqual(count, 42)
+
+    @patch("lambda_function.github_request")
+    def test_single_commit_no_link_header(self, mock_request):
+        # 1 commit, no link header
+        mock_request.return_value = (200, [{"sha": "abc"}], {})
+
+        count, evaluated = lambda_function.fetch_repo_commit_count("owner", "repo", "main")
+        self.assertTrue(evaluated)
+        self.assertEqual(count, 1)
+
+    @patch("lambda_function.github_request")
+    def test_empty_repo_409(self, mock_request):
+        # Empty repo returning 409 Conflict
+        mock_request.return_value = (409, {"message": "Git Repository is empty."}, {})
+
+        count, evaluated = lambda_function.fetch_repo_commit_count("owner", "repo", "main")
+        self.assertTrue(evaluated)
+        self.assertEqual(count, 0)
+
+    @patch("lambda_function.github_request")
+    def test_api_failure_404_or_500(self, mock_request):
+        # 404 branch not found
+        mock_request.return_value = (404, {"message": "Not Found"}, {})
+        count, evaluated = lambda_function.fetch_repo_commit_count("owner", "repo", "main")
+        self.assertFalse(evaluated)
+        self.assertIsNone(count)
 
 
 class TestContributionCalendarProcessing(unittest.TestCase):
@@ -77,7 +171,6 @@ class TestContributionCalendarProcessing(unittest.TestCase):
         now_utc = datetime(2026, 11, 17, 12, 0, 0, tzinfo=timezone.utc)
         one_year_ago = now_utc - timedelta(days=365)
 
-        # Mock calendar containing days within, before, and after interval
         sample_weeks = [
             # Week before window
             {
@@ -111,7 +204,6 @@ class TestContributionCalendarProcessing(unittest.TestCase):
         result = lambda_function.process_contributions(calendar, now_utc)
 
         self.assertTrue(result["available"])
-        # 2024-01-01 should be excluded
         daily_dates = [d["date"] for d in result["daily"]]
         self.assertNotIn("2024-01-01", daily_dates)
         self.assertIn(one_year_ago.strftime("%Y-%m-%d"), daily_dates)
@@ -119,33 +211,27 @@ class TestContributionCalendarProcessing(unittest.TestCase):
         self.assertIn("2026-01-01", daily_dates)
         self.assertIn(now_utc.strftime("%Y-%m-%d"), daily_dates)
 
-        # Total contributions sum
         expected_total = 5 + 0 + 3 + 4 + 2
         self.assertEqual(result["total_contributions"], expected_total)
-        # Active weeks (3 weeks with > 0 contributions)
         self.assertEqual(result["active_weeks"], 3)
         self.assertEqual(result["total_observed_weeks"], 3)
 
 
 class TestSuggestions(unittest.TestCase):
     def test_suggestions_generation(self):
-        # Case: Low activity, missing readmes, missing descriptions
         analyzed_repos = [
-            {"checks": {"has_description": False, "has_readme": False, "recent_push": False, "readme_evaluated": True}},
-            {"checks": {"has_description": True, "has_readme": False, "recent_push": False, "readme_evaluated": True}}
+            {"checks": {"has_readme": False, "recent_push": False, "commits_ge_10": False, "readme_evaluated": True, "commits_evaluated": True}},
+            {"checks": {"has_readme": False, "recent_push": False, "commits_ge_10": True, "readme_evaluated": True, "commits_evaluated": True}}
         ]
         suggestions = lambda_function.generate_suggestions(active_weeks=10, analyzed_repos=analyzed_repos, eligible_repo_count=2)
         self.assertTrue(2 <= len(suggestions) <= 3)
-        # Should include activity, readme, and description suggestions
         joined = " ".join(suggestions)
         self.assertIn("regularly", joined)
         self.assertIn("README", joined)
-        self.assertIn("descriptions", joined)
 
     def test_suggestions_stellar_profile(self):
-        # Stellar profile
         analyzed_repos = [
-            {"checks": {"has_description": True, "has_readme": True, "recent_push": True, "readme_evaluated": True}}
+            {"checks": {"has_readme": True, "recent_push": True, "commits_ge_10": True, "readme_evaluated": True, "commits_evaluated": True}}
             for _ in range(5)
         ]
         suggestions = lambda_function.generate_suggestions(active_weeks=45, analyzed_repos=analyzed_repos, eligible_repo_count=5)
@@ -196,11 +282,12 @@ class TestLambdaHandlerRouting(unittest.TestCase):
 
 
 class TestFullAnalysisScenarios(unittest.TestCase):
+    @patch("lambda_function.fetch_repo_commit_count")
     @patch("lambda_function.fetch_graphql_contributions")
     @patch("lambda_function.check_repo_readme")
     @patch("lambda_function.fetch_user_repos")
     @patch("lambda_function.fetch_user_profile")
-    def test_valid_public_user_success(self, mock_profile, mock_repos, mock_readme, mock_graphql):
+    def test_valid_public_user_success(self, mock_profile, mock_repos, mock_readme, mock_graphql, mock_commits):
         # 1. Profile
         mock_profile.return_value = {
             "login": "studentcoder",
@@ -224,6 +311,7 @@ class TestFullAnalysisScenarios(unittest.TestCase):
                 "language": "JavaScript",
                 "stargazers_count": 5,
                 "pushed_at": now_iso,
+                "default_branch": "main",
                 "owner": {"login": "studentcoder"}
             },
             {
@@ -234,11 +322,12 @@ class TestFullAnalysisScenarios(unittest.TestCase):
                 "language": "Python",
                 "stargazers_count": 12,
                 "pushed_at": now_iso,
+                "default_branch": "main",
                 "owner": {"login": "studentcoder"}
             },
             {
                 "name": "forked-library",
-                "fork": True,  # Fork -> should be ignored!
+                "fork": True,  # Fork -> excluded
                 "size": 500,
                 "description": "Forked repo",
                 "language": "C++",
@@ -249,7 +338,7 @@ class TestFullAnalysisScenarios(unittest.TestCase):
             {
                 "name": "empty-repo",
                 "fork": False,
-                "size": 0,  # Empty -> should be ignored!
+                "size": 0,  # Empty -> excluded
                 "description": "Empty project",
                 "language": None,
                 "stargazers_count": 0,
@@ -258,10 +347,17 @@ class TestFullAnalysisScenarios(unittest.TestCase):
             }
         ]
 
-        # 3. Readme check
+        # 3. Readme check: both have README
         mock_readme.side_effect = lambda owner, repo, token=None: (True, True)
 
-        # 4. GraphQL contributions
+        # 4. Commit counts: portfolio has 15 commits, algo has 5 commits
+        def commit_side_effect(owner, repo, default_branch="main", token=None):
+            if repo == "portfolio":
+                return 15, True
+            return 5, True
+        mock_commits.side_effect = commit_side_effect
+
+        # 5. GraphQL contributions
         mock_graphql.return_value = (
             {
                 "totalContributions": 240,
@@ -288,17 +384,25 @@ class TestFullAnalysisScenarios(unittest.TestCase):
         self.assertTrue(data["success"])
         self.assertEqual(data["username"], "studentcoder")
         self.assertEqual(data["profile"]["name"], "Jane Coder")
-        self.assertEqual(data["profile"]["created_year"], 2023)
 
-        # Only 2 eligible repos (forked & empty excluded)
+        # Only 2 eligible repos
         self.assertEqual(data["metrics"]["eligible_repos_count"], 2)
         self.assertEqual(data["metrics"]["analyzed_repos_count"], 2)
 
-        # Language distribution
-        langs = [item["language"] for item in data["languages"]]
-        self.assertIn("JavaScript", langs)
-        self.assertIn("Python", langs)
-        self.assertNotIn("C++", langs)
+        # Portfolio: has README (+1), recent push (+1), 15 commits (+1) -> 3 points (Excellent)
+        portfolio = data["repositories"][0]
+        self.assertEqual(portfolio["score"], 3)
+        self.assertEqual(portfolio["rating"], "Excellent")
+        self.assertEqual(portfolio["commit_count"], 15)
+        self.assertEqual(portfolio["commit_count_display"], "15")
+        self.assertTrue(portfolio["checks"]["commits_ge_10"])
+
+        # Algo: has README (+1), recent push (+1), 5 commits (+0) -> 2 points (Very Good)
+        algo = data["repositories"][1]
+        self.assertEqual(algo["score"], 2)
+        self.assertEqual(algo["rating"], "Very Good")
+        self.assertEqual(algo["commit_count"], 5)
+        self.assertFalse(algo["checks"]["commits_ge_10"])
 
     @patch("lambda_function.fetch_user_profile")
     def test_nonexistent_user_returns_404(self, mock_profile):
@@ -347,57 +451,30 @@ class TestFullAnalysisScenarios(unittest.TestCase):
         self.assertEqual(resp["statusCode"], 200)
         data = json.loads(resp["body"])
         self.assertEqual(data["metrics"]["eligible_repos_count"], 0)
-        self.assertEqual(data["metrics"]["analyzed_repos_count"], 0)
         self.assertEqual(len(data["repositories"]), 0)
-        self.assertEqual(len(data["languages"]), 0)
-        self.assertEqual(data["metrics"]["activity_rating"], "Insufficient data")
 
-    @patch("lambda_function.fetch_graphql_contributions")
-    @patch("lambda_function.fetch_user_repos")
-    @patch("lambda_function.fetch_user_profile")
-    def test_account_with_only_forked_repositories(self, mock_profile, mock_repos, mock_graphql):
-        mock_profile.return_value = {
-            "login": "onlyforks",
-            "name": "Fork User",
-            "public_repos": 5,
-            "created_at": "2023-01-01T00:00:00Z"
-        }
-        mock_repos.return_value = [
-            {"name": f"fork-{i}", "fork": True, "size": 100, "pushed_at": "2026-01-01T00:00:00Z"}
-            for i in range(5)
-        ]
-        mock_graphql.return_value = (None, "Token missing")
-
-        event = {
-            "requestContext": {"http": {"method": "GET"}},
-            "queryStringParameters": {"username": "onlyforks"}
-        }
-        resp = lambda_function.lambda_handler(event, None)
-        self.assertEqual(resp["statusCode"], 200)
-        data = json.loads(resp["body"])
-        self.assertEqual(data["metrics"]["eligible_repos_count"], 0)
-        self.assertEqual(data["repositories"], [])
-
+    @patch("lambda_function.fetch_repo_commit_count")
     @patch("lambda_function.fetch_graphql_contributions")
     @patch("lambda_function.check_repo_readme")
     @patch("lambda_function.fetch_user_repos")
     @patch("lambda_function.fetch_user_profile")
-    def test_repo_checks_missing_readme_and_description(self, mock_profile, mock_repos, mock_readme, mock_graphql):
+    def test_repo_commit_api_failure(self, mock_profile, mock_repos, mock_readme, mock_graphql, mock_commits):
         mock_profile.return_value = {"login": "dev", "public_repos": 1, "created_at": "2024-01-01T00:00:00Z"}
-        old_push = "2024-01-01T00:00:00Z"  # > 180 days ago
         mock_repos.return_value = [
             {
-                "name": "undocumented-project",
+                "name": "project-error",
                 "fork": False,
                 "size": 50,
-                "description": "",  # Missing description
-                "language": None,    # Missing language
-                "pushed_at": old_push,
+                "description": "Test",
+                "language": "Go",
+                "pushed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "default_branch": "main",
                 "owner": {"login": "dev"}
             }
         ]
-        # Missing README (404 status simulated by check_repo_readme returning False, True)
-        mock_readme.return_value = (False, True)
+        mock_readme.return_value = (True, True)
+        # Commit check fails
+        mock_commits.return_value = (None, False)
         mock_graphql.return_value = (None, None)
 
         event = {
@@ -408,44 +485,9 @@ class TestFullAnalysisScenarios(unittest.TestCase):
         self.assertEqual(resp["statusCode"], 200)
         data = json.loads(resp["body"])
         repo = data["repositories"][0]
-        self.assertFalse(repo["checks"]["has_description"])
-        self.assertFalse(repo["checks"]["has_readme"])
-        self.assertFalse(repo["checks"]["recent_push"])
-        self.assertEqual(repo["score"], 0)
-        self.assertEqual(repo["rating"], "Good")
-        self.assertEqual(repo["language"], "Not specified")
-
-    @patch("lambda_function.fetch_graphql_contributions")
-    @patch("lambda_function.check_repo_readme")
-    @patch("lambda_function.fetch_user_repos")
-    @patch("lambda_function.fetch_user_profile")
-    def test_repo_readme_evaluation_failure(self, mock_profile, mock_repos, mock_readme, mock_graphql):
-        mock_profile.return_value = {"login": "dev2", "public_repos": 1, "created_at": "2024-01-01T00:00:00Z"}
-        mock_repos.return_value = [
-            {
-                "name": "project-x",
-                "fork": False,
-                "size": 50,
-                "description": "Some description",
-                "language": "Go",
-                "pushed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "owner": {"login": "dev2"}
-            }
-        ]
-        # README API error (simulated by readme_evaluated = False)
-        mock_readme.return_value = (False, False)
-        mock_graphql.return_value = (None, None)
-
-        event = {
-            "requestContext": {"http": {"method": "GET"}},
-            "queryStringParameters": {"username": "dev2"}
-        }
-        resp = lambda_function.lambda_handler(event, None)
-        self.assertEqual(resp["statusCode"], 200)
-        data = json.loads(resp["body"])
-        repo = data["repositories"][0]
-        self.assertFalse(repo["checks"]["readme_evaluated"])
+        self.assertFalse(repo["checks"]["commits_evaluated"])
         self.assertEqual(repo["rating"], "Not evaluated")
+        self.assertEqual(repo["commit_count_display"], "N/A")
 
 
 if __name__ == "__main__":

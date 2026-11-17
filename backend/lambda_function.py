@@ -151,6 +151,37 @@ def check_repo_readme(owner, repo_name, token=None):
         return False, False
 
 
+def fetch_repo_commit_count(owner, repo_name, default_branch="main", token=None):
+    """
+    Retrieve commit count on default branch using GitHub REST API.
+    Uses per_page=1 and inspects the 'Link' header for rel="last" to extract the total commit count.
+    Returns (commit_count: int | None, commits_evaluated: bool)
+    """
+    branch = default_branch or "main"
+    url = f"{GITHUB_API_BASE}/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo_name)}/commits?per_page=1&sha={urllib.parse.quote(branch)}"
+    try:
+        status, data, headers = github_request(url, token=token)
+        if status == 200:
+            # Check Link header for rel="last" page number
+            link_header = next((v for k, v in headers.items() if k.lower() == "link"), "")
+            match = re.search(r'[?&]page=(\d+)[^>]*>;\s*rel="last"', link_header)
+            if match:
+                return int(match.group(1)), True
+
+            # If no rel="last", commits list length reflects total commits (e.g. 1 commit or empty)
+            if isinstance(data, list):
+                return len(data), True
+            return None, False
+        elif status == 409:
+            # Git repository is empty
+            return 0, True
+        else:
+            # 404 branch not found, 403 rate limit, or 500 error
+            return None, False
+    except Exception:
+        return None, False
+
+
 def fetch_graphql_contributions(username, token=None):
     """
     Query GitHub GraphQL API for the rolling 12-month contribution calendar.
@@ -242,22 +273,22 @@ def calculate_activity_rating(active_weeks):
         return "Good"
 
 
-def rate_repository(has_desc, has_readme, recent_push, readme_evaluated):
+def rate_repository(has_readme, recent_push, commit_count, readme_evaluated, commits_evaluated):
     """
-    Repository Rating:
-    3 checks:
-      1. Nonempty description: +1
-      2. README file exists: +1
-      3. Pushed to within last 180 days: +1
+    Repository Rating (3 signals):
+      1. README file exists: +1
+      2. Pushed to within last 180 days: +1
+      3. At least 10 commits on default branch: +1
+
     Score 0-1: Good
     Score 2: Very Good
     Score 3: Excellent
-    If README was not evaluated due to API error: 'Not evaluated'
+    If README or commit count was not evaluated due to API error: 'Not evaluated'
     """
-    if not readme_evaluated:
+    if not readme_evaluated or not commits_evaluated or commit_count is None:
         return "Not evaluated", 0
 
-    points = (1 if has_desc else 0) + (1 if has_readme else 0) + (1 if recent_push else 0)
+    points = (1 if has_readme else 0) + (1 if recent_push else 0) + (1 if commit_count >= 10 else 0)
     if points == 3:
         return "Excellent", 3
     elif points == 2:
@@ -281,12 +312,12 @@ def generate_suggestions(active_weeks, analyzed_repos, eligible_repo_count):
     if missing_readme_count > 0:
         suggestions.append(f"Add README files to explain the purpose, installation, and usage of your projects ({missing_readme_count} repo{'s' if missing_readme_count > 1 else ''} currently missing a README).")
 
-    # Rule 3: Missing Descriptions
-    missing_desc_count = sum(1 for r in analyzed_repos if not r.get("checks", {}).get("has_description"))
-    if missing_desc_count > 0:
-        suggestions.append("Write short descriptions for all your repositories so visitors immediately understand what each project does.")
+    # Rule 3: Low commits (< 10 commits on default branch)
+    low_commit_repos = sum(1 for r in analyzed_repos if r.get("checks", {}).get("commits_evaluated") and not r.get("checks", {}).get("commits_ge_10"))
+    if low_commit_repos > 0:
+        suggestions.append(f"Make regular commits to develop your projects iteratively (aim for at least 10 commits on key repositories).")
 
-    # Rule 4: Maintenance freshness
+    # Rule 4: Maintenance freshness (<180d)
     inactive_repos = sum(1 for r in analyzed_repos if not r.get("checks", {}).get("recent_push"))
     if analyzed_repos and (inactive_repos / len(analyzed_repos)) >= 0.5:
         suggestions.append("Keep your key projects up to date by refreshing dependencies, fixing bugs, and documenting progress.")
@@ -387,7 +418,7 @@ def process_contributions(calendar, now_utc):
 
 def analyze_user(username):
     """
-    Core business logic: fetch profile, repositories, README checks, and contributions.
+    Core business logic: fetch profile, repositories, README & commit checks, and contributions.
     """
     token = os.environ.get("GITHUB_TOKEN")
     if token:
@@ -438,35 +469,52 @@ def analyze_user(username):
     for repo in selected_repos_raw:
         repo_name = repo.get("name", "untitled")
         owner_login = repo.get("owner", {}).get("login", username)
+        default_branch = repo.get("default_branch") or "main"
         desc = (repo.get("description") or "").strip()
-        has_description = bool(desc)
 
-        # Check README
+        # Signal 1: Check README
         has_readme, readme_evaluated = check_repo_readme(owner_login, repo_name, token=token)
 
-        # Check recent push (within 180 days)
+        # Signal 2: Check recent push (within 180 days)
         pushed_at_dt = parse_iso_datetime(repo.get("pushed_at"))
         recent_push = bool(pushed_at_dt and pushed_at_dt >= cutoff_180_days)
 
-        rating, score = rate_repository(has_description, has_readme, recent_push, readme_evaluated)
+        # Signal 3: Check Commit Count on default branch
+        commit_count, commits_evaluated = fetch_repo_commit_count(
+            owner_login, repo_name, default_branch=default_branch, token=token
+        )
+
+        commits_ge_10 = bool(commits_evaluated and commit_count is not None and commit_count >= 10)
+
+        # Calculate rating
+        rating, score = rate_repository(
+            has_readme=has_readme,
+            recent_push=recent_push,
+            commit_count=commit_count,
+            readme_evaluated=readme_evaluated,
+            commits_evaluated=commits_evaluated,
+        )
 
         pushed_at_str = pushed_at_dt.strftime("%Y-%m-%d") if pushed_at_dt else "Unknown"
 
         analyzed_repos.append({
             "name": repo_name,
             "html_url": repo.get("html_url", f"https://github.com/{owner_login}/{repo_name}"),
-            "description": desc if has_description else "No description provided.",
+            "description": desc if desc else "No description provided.",
             "language": repo.get("language") or "Not specified",
             "stargazers_count": repo.get("stargazers_count", 0),
+            "commit_count": commit_count,
+            "commit_count_display": str(commit_count) if commit_count is not None else "N/A",
             "pushed_at": repo.get("pushed_at"),
             "pushed_at_formatted": pushed_at_str,
             "score": score,
             "rating": rating,
             "checks": {
-                "has_description": has_description,
                 "has_readme": has_readme,
                 "recent_push": recent_push,
+                "commits_ge_10": commits_ge_10,
                 "readme_evaluated": readme_evaluated,
+                "commits_evaluated": commits_evaluated,
             },
         })
 

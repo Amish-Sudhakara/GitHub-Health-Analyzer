@@ -35,7 +35,7 @@ export function generateHealthReport(data) {
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(20);
   doc.setTextColor(...primaryColor);
-  doc.text('GitHub Student Health Analysis', margin + 14, y + 18);
+  doc.text('GitHub Health Analysis', margin + 14, y + 18);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(10);
@@ -153,16 +153,22 @@ export function generateHealthReport(data) {
   y += 8;
 
   const repoRows = (data.repositories || []).map((r) => {
-    const checks = [
-      r.checks.has_description ? 'Desc: Yes' : 'Desc: No',
-      r.checks.readme_evaluated ? (r.checks.has_readme ? 'README: Yes' : 'README: No') : 'README: N/A',
-      r.checks.recent_push ? 'Recent: Yes' : 'Recent: No',
-    ].join(' | ');
+    const readmeText = r.checks.readme_evaluated
+      ? (r.checks.has_readme ? 'README: Yes' : 'README: No')
+      : 'README: N/A';
+    const recentText = r.checks.recent_push ? '<180d: Yes' : '<180d: No';
+    const commitsText = r.checks.commits_evaluated
+      ? (r.checks.commits_ge_10 ? '≥10 Commits: Yes' : '≥10 Commits: No')
+      : 'Commits: N/A';
+    const checks = `${readmeText} | ${recentText} | ${commitsText}`;
+
+    const commitDisplay = r.commit_count_display || (r.commit_count != null ? String(r.commit_count) : 'N/A');
 
     return [
       r.name,
       r.language || 'Not specified',
       String(r.stargazers_count || 0),
+      commitDisplay,
       r.pushed_at_formatted || 'Unknown',
       checks,
       r.rating,
@@ -172,7 +178,7 @@ export function generateHealthReport(data) {
   if (repoRows.length > 0) {
     autoTable(doc, {
       startY: y,
-      head: [['Repository', 'Primary Lang', 'Stars', 'Last Push', 'Documentation Signals', 'Rating']],
+      head: [['Repository', 'Primary Lang', 'Stars', 'Commits', 'Last Push', 'Maintenance Signals', 'Rating']],
       body: repoRows,
       theme: 'striped',
       styles: {
@@ -187,12 +193,13 @@ export function generateHealthReport(data) {
         fontStyle: 'bold',
       },
       columnStyles: {
-        0: { cellWidth: 90, fontStyle: 'bold' },
-        1: { cellWidth: 70 },
-        2: { cellWidth: 35, halign: 'center' },
-        3: { cellWidth: 60 },
-        4: { cellWidth: 160 },
-        5: { cellWidth: 65, fontStyle: 'bold' },
+        0: { cellWidth: 85, fontStyle: 'bold' },
+        1: { cellWidth: 65 },
+        2: { cellWidth: 30, halign: 'center' },
+        3: { cellWidth: 40, halign: 'center' },
+        4: { cellWidth: 55 },
+        5: { cellWidth: 145 },
+        6: { cellWidth: 60, fontStyle: 'bold' },
       },
       margin: { left: margin, right: margin },
     });
@@ -255,7 +262,7 @@ export function generateHealthReport(data) {
   doc.setFontSize(7.5);
   doc.setTextColor(...secondaryColor);
   const disclaimer =
-    'This evaluation is a lightweight snapshot based exclusively on public GitHub API signals (contributions, README presence, descriptions, and push recency). It does not assess internal source code quality, architecture, or algorithmic proficiency. Private repositories and offline contributions are not evaluated.';
+    'This evaluation is a lightweight snapshot based exclusively on public GitHub API signals (contributions, README presence, push recency, and commit history). It does not assess internal source code quality, architecture, or algorithmic proficiency. Private repositories and offline contributions are not evaluated.';
   const splitDisclaimer = doc.splitTextToSize(disclaimer, contentWidth);
   doc.text(splitDisclaimer, margin, y + 10);
 
@@ -267,7 +274,7 @@ export function generateHealthReport(data) {
     doc.setFontSize(8);
     doc.setTextColor(...secondaryColor);
     doc.text(
-      `GitHub Student Health Analyzer  |  Page ${i} of ${totalPages}`,
+      `GitHub Health Analyzer  |  Page ${i} of ${totalPages}`,
       pageWidth / 2,
       pageHeight - 20,
       { align: 'center' }

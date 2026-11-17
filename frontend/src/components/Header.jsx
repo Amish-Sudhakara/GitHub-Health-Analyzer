@@ -28,9 +28,6 @@ export default function Header({ onAnalyze, loading, cachedTime, onRefresh, curr
 
   return (
     <header className="header-section">
-      <div className="brand-badge">
-        <span>GitHub Student Health</span>
-      </div>
       <h1 className="app-title">GitHub Health</h1>
       <p className="app-subtitle">
         A simple, lightweight snapshot of your GitHub activity, repositories, and project maintenance.
@@ -66,10 +63,7 @@ export default function Header({ onAnalyze, loading, cachedTime, onRefresh, curr
         )}
 
         {cachedTime && (
-          <div className="search-meta-bar">
-            <span className="cached-indicator">
-              Cached result ({cachedTime})
-            </span>
+          <div className="search-meta-bar" style={{ justifyContent: 'flex-end' }}>
             <button
               type="button"
               className="btn-secondary"

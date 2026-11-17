@@ -259,7 +259,7 @@ export default function App() {
       {/* Footer */}
       <footer className="app-footer">
         <p>
-          GitHub Student Health Analyzer &bull; Built with React, Vite, and Python AWS Lambda &bull; Slate &amp; Sage Minimalist Design
+          GitHub Health Analyzer &bull; Built with React, Vite, and Python AWS Lambda &bull; Slate &amp; Sage Minimalist Design
         </p>
         <p style={{ marginTop: '4px', opacity: 0.8 }}>
           Public data only. Not affiliated with or endorsed by GitHub, Inc.

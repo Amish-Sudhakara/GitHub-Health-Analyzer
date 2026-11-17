@@ -46,6 +46,7 @@ export default function RepositoryList({ repositories }) {
               <th>Repository</th>
               <th>Primary Language</th>
               <th>Stars</th>
+              <th>Commits</th>
               <th>Last Push</th>
               <th>Signals</th>
               <th>Rating</th>
@@ -67,15 +68,10 @@ export default function RepositoryList({ repositories }) {
                 </td>
                 <td>{repo.language}</td>
                 <td>{repo.stargazers_count}</td>
+                <td>{repo.commit_count_display || (repo.commit_count != null ? repo.commit_count : 'N/A')}</td>
                 <td>{repo.pushed_at_formatted}</td>
                 <td>
                   <div className="repo-checks-detail">
-                    <span
-                      className={`check-tag ${repo.checks.has_description ? 'pass' : 'fail'}`}
-                      title={repo.checks.has_description ? 'Description provided' : 'No description'}
-                    >
-                      Desc
-                    </span>
                     <span
                       className={`check-tag ${
                         !repo.checks.readme_evaluated
@@ -100,6 +96,24 @@ export default function RepositoryList({ repositories }) {
                     >
                       &lt;180d
                     </span>
+                    <span
+                      className={`check-tag ${
+                        !repo.checks.commits_evaluated
+                          ? 'fail'
+                          : repo.checks.commits_ge_10
+                          ? 'pass'
+                          : 'fail'
+                      }`}
+                      title={
+                        !repo.checks.commits_evaluated
+                          ? 'Commit count unevaluated'
+                          : repo.checks.commits_ge_10
+                          ? '≥10 commits on default branch'
+                          : '<10 commits on default branch'
+                      }
+                    >
+                      &ge;10 commits
+                    </span>
                   </div>
                 </td>
                 <td>
@@ -114,7 +128,7 @@ export default function RepositoryList({ repositories }) {
       </div>
 
       <div style={{ marginTop: '16px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-        Note: This rating assesses basic project hygiene (presence of description, README documentation, and recent commit/push activity). It does not grade internal code complexity, style, or algorithm performance.
+        Note: This rating assesses basic project maintenance (presence of README documentation, push activity within the last 180 days, and at least 10 commits on the default branch). It does not grade internal code complexity, style, or algorithm performance.
       </div>
     </section>
   );
