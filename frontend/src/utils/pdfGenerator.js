@@ -1,5 +1,21 @@
 import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
+import autoTablePlugin, { applyPlugin } from 'jspdf-autotable';
+
+try {
+  applyPlugin(jsPDF);
+} catch (e) {
+  // Plugin already applied or running in modular environment
+}
+
+const renderAutoTable = (doc, options) => {
+  if (typeof doc.autoTable === 'function') {
+    doc.autoTable(options);
+  } else if (typeof autoTablePlugin === 'function') {
+    autoTablePlugin(doc, options);
+  } else if (autoTablePlugin && typeof autoTablePlugin.default === 'function') {
+    autoTablePlugin.default(doc, options);
+  }
+};
 
 /**
  * Generate a clean, professional PDF analysis report using jsPDF and jspdf-autotable.
@@ -123,7 +139,7 @@ export function generateHealthReport(data) {
       mergedRows.push([a[0], a[1], b[0], b[1]]);
     }
 
-    autoTable(doc, {
+    renderAutoTable(doc, {
       startY: y,
       head: [['Month', 'Contributions', 'Month', 'Contributions']],
       body: mergedRows,
@@ -142,7 +158,8 @@ export function generateHealthReport(data) {
       margin: { left: margin, right: margin },
     });
 
-    y = doc.lastAutoTable.finalY + 16;
+    const tableFinalY = doc.lastAutoTable ? doc.lastAutoTable.finalY : y + 60;
+    y = tableFinalY + 16;
   }
 
   // 5. Repository Analysis Table
@@ -176,7 +193,7 @@ export function generateHealthReport(data) {
   });
 
   if (repoRows.length > 0) {
-    autoTable(doc, {
+    renderAutoTable(doc, {
       startY: y,
       head: [['Repository', 'Primary Lang', 'Stars', 'Commits', 'Last Push', 'Maintenance Signals', 'Rating']],
       body: repoRows,
@@ -203,7 +220,8 @@ export function generateHealthReport(data) {
       },
       margin: { left: margin, right: margin },
     });
-    y = doc.lastAutoTable.finalY + 18;
+    const repoFinalY = doc.lastAutoTable ? doc.lastAutoTable.finalY : y + 80;
+    y = repoFinalY + 18;
   } else {
     doc.setFont('helvetica', 'italic');
     doc.setFontSize(9);
